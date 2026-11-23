@@ -2,6 +2,8 @@
 
 进京证申请流程的异步 Rust 客户端。它封装北京市统一身份认证和北京交警业务上游，包括密码或短信登录、车辆绑定、办证校验、提交和结果查询。
 
+[![京途小助手，进京证自动续期、外地车导航。微信扫码打开。](assets/jingtu-plush-poster.webp)](https://jing.vibeco.me/intro/)
+
 ## 安装
 
 需要 Rust 1.88 或更新版本，以及 OpenSSL 开发库。Linux 可安装 `pkg-config` 和 `libssl-dev`，macOS 可使用 Homebrew 的 `openssl@3`。应用需有 Tokio 异步运行时。

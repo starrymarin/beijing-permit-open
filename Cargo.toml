@@ -8,7 +8,7 @@ description = "Rust client for the Beijing entry permit application workflow"
 repository = "https://github.com/starrymarin/beijing-permit-open"
 readme = "README.md"
 keywords = ["beijing", "permit", "open"]
-include = ["/src", "/examples", "/README.md", "/LICENSE", "/.gitignore"]
+include = ["/src", "/examples", "/README.md", "/LICENSE", "/.gitignore", "/assets/jingtu-plush-poster.webp"]
 
 [dependencies]
 base64 = "0.22"
