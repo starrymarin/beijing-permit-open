@@ -1,5 +1,5 @@
-//! Async client for authorized Beijing entry permit integrations.
-//! See the README for the workflow, upstream field names and verification scope.
+//! Async client for Beijing Traffic Police login and entry permit APIs.
+//! Login uses Beijing Unified Identity Authentication to establish a Beijing Traffic Police session.
 #![forbid(unsafe_code)]
 
 mod auth;

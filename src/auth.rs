@@ -112,7 +112,8 @@ pub struct Login {
 }
 
 impl Login {
-    /// Open the official login page with your authorized integration's client ID and state.
+    /// Start the Beijing Traffic Police login flow through Beijing Unified Identity Authentication.
+    /// The callback address belongs to Beijing Traffic Police.
     pub async fn start(client_id: &str, state: &str) -> Result<Self> {
         Self::start_with(
             transport::client(true)?,
