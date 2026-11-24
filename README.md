@@ -62,7 +62,9 @@ login.send_sms(mobile, captcha_answer).await?;
 let session = login.login_with_sms(sms_code).await?;
 ```
 
-身份认证成功后，库会用授权回调换取北京交警会话 `AppSession`。密码登录是否可用取决于账号及上游策略。遇到额外身份核验或官方客户端要求时，库会返回 `Error::OfficialClientRequired`。
+身份认证成功后，库会跟随北京交警的授权回调。当前流程中，`/sso/callback/userauth` 会跳转到 `/sfront/ssplocal/test/login.html?token=...&userType=...&redirectUrl=...`；库会从回调页 URL 提取 token，再调用 `auth/appLogin` 建立 `AppSession`。回调页里的 `redirectUrl` 允许是相对路径。
+
+密码登录是否可用取决于账号及上游策略。回调链最终没有带回 token，或认证等级不足时，库会返回 `Error::OfficialClientRequired`。图形验证码错误（5016、5017、5021）会以 `Error::Rejected` 返回，调用方可以重新获取验证码后重试。
 
 ### 使用已有会话
 

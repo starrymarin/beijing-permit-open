@@ -236,7 +236,7 @@ impl Login {
             )
             .await
             .and_then(|value| auth_code(&value, "send_sms"))
-            .map_err(|error| transport::mutation(error, "send_sms"));
+            .map_err(send_sms_error);
         match &reply {
             Ok(()) => {
                 self.sms_mobile = Some(mobile.to_owned());
@@ -266,7 +266,7 @@ impl Login {
                 &[("encryptData", &payload)],
             )
             .await
-            .map_err(|error| transport::mutation(error, "login_with_sms"))?;
+            .map_err(|error| login_error(error, "login_with_sms"))?;
         self.finish(value).await
     }
 
@@ -288,7 +288,7 @@ impl Login {
                 &[("encryptData", &payload), ("captcha", captcha)],
             )
             .await
-            .map_err(|error| transport::mutation(error, "login_with_password"))?;
+            .map_err(|error| login_error(error, "login_with_password"))?;
         self.finish(value).await
     }
 
@@ -330,7 +330,6 @@ impl Login {
                 return Err(Error::OfficialClientRequired);
             }
             if transport::approved(&url, &[&self.endpoints.app])
-                && url.path() == CALLBACK
                 && let Some(token) = parameter(&url, "token")
             {
                 let session = exchange(&self.http, &self.endpoints, &url, &token).await?;
@@ -362,6 +361,29 @@ fn redirect(from: &Url, response: &reqwest::Response) -> Result<Url> {
         .and_then(|v| v.to_str().ok())
         .and_then(|location| from.join(location).ok())
         .ok_or(Error::OfficialClientRequired)
+}
+
+fn send_sms_error(error: Error) -> Error {
+    // 5016/5017/5021 are captcha errors: the SMS was not sent, so the caller may
+    // retry with a fresh captcha instead of treating the outcome as unknown.
+    if matches!(
+        &error,
+        Error::Rejected {
+            code: 5016 | 5017 | 5021,
+            ..
+        }
+    ) {
+        error
+    } else {
+        transport::mutation(error, "send_sms")
+    }
+}
+
+fn login_error(error: Error, operation: &'static str) -> Error {
+    match error {
+        Error::Rejected { .. } => error,
+        other => transport::mutation(other, operation),
+    }
 }
 
 fn parameter(url: &Url, key: &str) -> Option<String> {
@@ -424,8 +446,10 @@ async fn exchange(
         return Err(Error::OfficialClientRequired);
     }
     let redirect_url = parameter(url, "redirectUrl").unwrap_or_default();
+    // The callback page normally carries a relative `redirectUrl`; only reject
+    // absolute URLs that point outside the approved origins.
     if !redirect_url.is_empty()
-        && !Url::parse(&redirect_url).is_ok_and(|url| endpoints.approved(&url))
+        && Url::parse(&redirect_url).is_ok_and(|url| !endpoints.approved(&url))
     {
         return Err(Error::OfficialClientRequired);
     }
@@ -494,6 +518,38 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    #[test]
+    fn classifies_send_sms_and_login_rejections() {
+        assert!(matches!(
+            send_sms_error(Error::Rejected {
+                operation: "send_sms",
+                code: 5016
+            }),
+            Error::Rejected { code: 5016, .. }
+        ));
+        assert!(matches!(
+            send_sms_error(Error::Rejected {
+                operation: "send_sms",
+                code: 500
+            }),
+            Error::OutcomeUnknown("send_sms")
+        ));
+        assert!(matches!(
+            login_error(
+                Error::Rejected {
+                    operation: "login_with_sms",
+                    code: 5019
+                },
+                "login_with_sms"
+            ),
+            Error::Rejected { code: 5019, .. }
+        ));
+        assert!(matches!(
+            login_error(Error::Transport, "login_with_sms"),
+            Error::OutcomeUnknown("login_with_sms")
+        ));
+    }
+
     #[tokio::test]
     async fn password_and_sms_preserve_session_and_use_official_payloads() {
         let rsa = Rsa::generate(1024).unwrap();
@@ -543,8 +599,17 @@ mod tests {
                         assert_eq!(plain, json!({"mobile":"13000000000", "smsCode":"123456"}));
                     }
                     Json(json!({"meta":{"code":0},"data":{"certLevel":"L3","grantLevel":"L2",
-                        "redirectUrl":"/sso/callback/userauth?token=synthetic-sso-callback-token"}})).into_response()
+                        "redirectUrl":"/sso/callback/userauth?code=synthetic-code"}})).into_response()
                 }
+                "/sso/callback/userauth" => (
+                    StatusCode::FOUND,
+                    [(
+                        "location",
+                        "/sfront/ssplocal/test/login.html?token=synthetic-sso-callback-token&userType=Z&redirectUrl=%2Fsfront%2Fssplocal%2Ftest%2Flogin.html"
+                            .to_string(),
+                    )],
+                )
+                    .into_response(),
                 "/auth/appLogin" => {
                     assert!(uri.query().unwrap().contains("token=synthetic-sso-callback-token"));
                     Json(json!({"code":200,"data":{"access_token":"synthetic-app-token"}})).into_response()
