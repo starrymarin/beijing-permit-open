@@ -79,7 +79,8 @@ pub(crate) fn mutation(error: Error, operation: &'static str) -> Error {
 }
 
 pub(crate) fn approved(url: &Url, origins: &[&str]) -> bool {
-    url.username().is_empty()
+    matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
         && url.password().is_none()
         && origins.contains(&url.origin().ascii_serialization().as_str())
 }

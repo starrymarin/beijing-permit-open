@@ -62,7 +62,9 @@ login.send_sms(mobile, captcha_answer).await?;
 let session = login.login_with_sms(sms_code).await?;
 ```
 
-身份认证成功后，库会用授权回调换取北京交警会话 `AppSession`。密码登录是否可用取决于账号及上游策略。遇到额外身份核验或官方客户端要求时，库会返回 `Error::OfficialClientRequired`。
+身份认证成功后，库会沿官方回调逐跳查找 token，再换取北京交警会话 `AppSession`。回调页提供的相对 `redirectUrl` 会基于该页解析并校验来源。密码登录是否可用取决于账号及上游策略。遇到额外身份核验或官方客户端要求时，库会返回 `Error::OfficialClientRequired`。
+
+发送短信时，官方明确拒绝会返回 `Error::Rejected`。收到图形验证码错误或过期（5016、5017）后，可重新获取验证码并由本人填写后再发送。收到 `Error::OutcomeUnknown("send_sms")` 时，应先确认发送结果。
 
 ### 使用已有会话
 

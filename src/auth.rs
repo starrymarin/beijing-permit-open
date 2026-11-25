@@ -236,7 +236,10 @@ impl Login {
             )
             .await
             .and_then(|value| auth_code(&value, "send_sms"))
-            .map_err(|error| transport::mutation(error, "send_sms"));
+            .map_err(|error| match error {
+                Error::Rejected { .. } => error,
+                other => transport::mutation(other, "send_sms"),
+            });
         match &reply {
             Ok(()) => {
                 self.sms_mobile = Some(mobile.to_owned());
@@ -329,10 +332,7 @@ impl Login {
             if !self.endpoints.approved(&url) {
                 return Err(Error::OfficialClientRequired);
             }
-            if transport::approved(&url, &[&self.endpoints.app])
-                && url.path() == CALLBACK
-                && let Some(token) = parameter(&url, "token")
-            {
+            if let Some(token) = parameter(&url, "token").filter(|token| !token.is_empty()) {
                 let session = exchange(&self.http, &self.endpoints, &url, &token).await?;
                 session
                     .account_with(&self.http, &self.endpoints.app)
@@ -425,7 +425,9 @@ async fn exchange(
     }
     let redirect_url = parameter(url, "redirectUrl").unwrap_or_default();
     if !redirect_url.is_empty()
-        && !Url::parse(&redirect_url).is_ok_and(|url| endpoints.approved(&url))
+        && !url
+            .join(&redirect_url)
+            .is_ok_and(|destination| endpoints.approved(&destination))
     {
         return Err(Error::OfficialClientRequired);
     }
@@ -523,10 +525,16 @@ mod tests {
                 "/renzheng/inner/m/sendSmsBeforeLogin" => {
                     let payload = Url::parse(&format!("http://localhost/?{}", String::from_utf8_lossy(&bytes))).unwrap();
                     let form: BTreeMap<_, _> = payload.query_pairs().collect();
-                    assert_eq!(form.get("captcha").unwrap(), "demo");
                     assert_eq!(form.get("mobile").unwrap(), "13000000000");
                     count.fetch_add(1, Ordering::SeqCst);
-                    Json(json!({"meta":{"code":0}})).into_response()
+                    let code = match form["captcha"].as_ref() {
+                        "wrong" => 5016,
+                        "expired" => 5017,
+                        "demo" => 0,
+                        "unavailable" => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        _ => panic!("unexpected captcha"),
+                    };
+                    Json(json!({"meta":{"code":code}})).into_response()
                 }
                 path @ ("/renzheng/inner/m/login/doUserLoginByPwd" | "/renzheng/inner/m/login/doUserLoginBySms") => {
                     assert_eq!(method, "POST");
@@ -543,10 +551,19 @@ mod tests {
                         assert_eq!(plain, json!({"mobile":"13000000000", "smsCode":"123456"}));
                     }
                     Json(json!({"meta":{"code":0},"data":{"certLevel":"L3","grantLevel":"L2",
-                        "redirectUrl":"/sso/callback/userauth?token=synthetic-sso-callback-token"}})).into_response()
+                        "redirectUrl":"/sso/callback/userauth?code=synthetic-code"}})).into_response()
                 }
+                CALLBACK => (
+                    StatusCode::FOUND,
+                    [("location", "/sfront/ssplocal/test/login.html?token=synthetic-sso-callback-token&userType=Z&redirectUrl=%2Fsfront%2Fssplocal%2Ftest%2Flogin.html")],
+                )
+                    .into_response(),
                 "/auth/appLogin" => {
-                    assert!(uri.query().unwrap().contains("token=synthetic-sso-callback-token"));
+                    let url = Url::parse(&format!("http://localhost{uri}")).unwrap();
+                    let query: BTreeMap<_, _> = url.query_pairs().collect();
+                    assert_eq!(query["token"], "synthetic-sso-callback-token");
+                    assert_eq!(query["userType"], "Z");
+                    assert_eq!(query["redirectUrl"], "/sfront/ssplocal/test/login.html");
                     Json(json!({"code":200,"data":{"access_token":"synthetic-app-token"}})).into_response()
                 }
                 "/system/user/getInfo" => {
@@ -580,10 +597,20 @@ mod tests {
             .unwrap();
         assert_eq!(app.token, "synthetic-app-token");
         let mut login = start().await.unwrap();
+        for (captcha, expected) in [("wrong", 5016), ("expired", 5017)] {
+            login.captcha().await.unwrap();
+            assert!(matches!(
+                login.send_sms("13000000000", captcha).await,
+                Err(Error::Rejected { operation: "send_sms", code }) if code == expected
+            ));
+        }
         login.captcha().await.unwrap();
         login.send_sms("13000000000", "demo").await.unwrap();
-        assert!(login.send_sms("13000000000", "demo").await.is_err());
-        assert_eq!(sms_requests.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            login.send_sms("13000000000", "demo").await,
+            Err(Error::InvalidInput("sms_already_requested"))
+        ));
+        assert_eq!(sms_requests.load(Ordering::SeqCst), 3);
         let app = login.login_with_sms("123456").await.unwrap();
         assert_eq!(app.token, "synthetic-app-token");
 
@@ -593,5 +620,20 @@ mod tests {
         assert!(matches!(login.finish(json!({"meta":{"code":0},"data":{
             "certLevel":"L3","grantLevel":"L2","redirectUrl":"https://example.invalid/sso/callback/userauth?token=ignored"
         }})).await, Err(Error::OfficialClientRequired)));
+        assert!(matches!(login.finish(json!({"meta":{"code":0},"data":{
+            "certLevel":"L3","grantLevel":"L2",
+            "redirectUrl":"/sfront/ssplocal/test/login.html?token=synthetic-sso-callback-token&redirectUrl=%2F%2Fexample.invalid%2F"
+        }})).await, Err(Error::OfficialClientRequired)));
+
+        let mut login = start().await.unwrap();
+        assert!(matches!(
+            login.send_sms("13000000000", "unavailable").await,
+            Err(Error::OutcomeUnknown("send_sms"))
+        ));
+        assert!(matches!(
+            login.send_sms("13000000000", "demo").await,
+            Err(Error::InvalidInput("sms_already_requested"))
+        ));
+        assert_eq!(sms_requests.load(Ordering::SeqCst), 4);
     }
 }
